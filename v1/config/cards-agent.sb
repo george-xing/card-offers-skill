@@ -1,0 +1,58 @@
+;; macOS Seatbelt profile for the post-login browser agent only.
+;; Authentication runs before this process and is intentionally outside it.
+(version 1)
+
+;; Paths come from parameters so the profile is not tied to one machine:
+;;   sandbox-exec -D HOME="$HOME" -D REPO="<repo root>" -f v1/config/cards-agent.sb ...
+
+;; Preserve normal Codex/CDP/network behavior, then remove every known route
+;; to the cards service-account token or 1Password material.
+(allow default)
+
+;; The service-account token is stored in Login Keychain with an ACL that
+;; trusts only cards-keychain. Deny Keychain IPC as a second boundary.
+(deny mach-lookup
+  (global-name "com.apple.securityd")
+  (global-name "com.apple.securityd.xpc"))
+
+;; Do not let the agent execute credential brokers or general automation
+;; tools that could ask another GUI process to retrieve a secret.
+(deny process-exec
+  (literal (string-append (param "HOME") "/.local/bin/cards-keychain"))
+  (literal (string-append (param "HOME") "/.local/bin/op"))
+  (literal (string-append (param "REPO") "/v1/bin/cards-auth.py"))
+  (literal "/bin/launchctl")
+  (literal "/usr/bin/open")
+  (literal "/usr/bin/security")
+  (literal "/usr/bin/osascript")
+  (literal "/usr/bin/crontab")
+  (literal "/usr/bin/at"))
+
+;; Prevent copying or interpreting the denied executables/scripts and prevent
+;; reading secret references, 1Password state, or Keychain database files.
+(deny file-read-data
+  (literal (string-append (param "HOME") "/.local/bin/cards-keychain"))
+  (literal (string-append (param "HOME") "/.local/bin/op"))
+  (literal (string-append (param "REPO") "/v1/bin/cards-auth.py"))
+  (subpath (string-append (param "HOME") "/.config/cards"))
+  (subpath (string-append (param "HOME") "/.config/op"))
+  (subpath (string-append (param "HOME") "/Library/Keychains"))
+  (subpath (string-append (param "HOME") "/Library/Application Support/1Password")))
+
+;; The agent never needs to mutate any credential store either.
+(deny file-write*
+  (literal (string-append (param "REPO") "/v1/config/cards-agent.sb"))
+  (literal (string-append (param "REPO") "/v1/bin/cards-fire.sh"))
+  (literal (string-append (param "REPO") "/v1/bin/cards-auth.py"))
+  (literal (string-append (param "REPO") "/v1/bin/cards-keychain.swift"))
+  (literal (string-append (param "REPO") "/v1/SKILL.md"))
+  (subpath (string-append (param "HOME") "/Library/LaunchAgents"))
+  (subpath (string-append (param "HOME") "/.ssh"))
+  (literal (string-append (param "HOME") "/.zshrc"))
+  (literal (string-append (param "HOME") "/.zprofile"))
+  (literal (string-append (param "HOME") "/.bash_profile"))
+  (literal (string-append (param "HOME") "/.bashrc"))
+  (subpath (string-append (param "HOME") "/.config/cards"))
+  (subpath (string-append (param "HOME") "/.config/op"))
+  (subpath (string-append (param "HOME") "/Library/Keychains"))
+  (subpath (string-append (param "HOME") "/Library/Application Support/1Password")))
