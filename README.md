@@ -20,14 +20,22 @@ send a short roundup.
 
 ## v2 — November 2026: a Hermes agent runs the whole job (Chase and Amex)
 
-- One Hermes cron job follows `v2/SKILL.md` end to end: it picks the bank tabs,
-  logs in with Hermes's native password-vault tools (the password never passes
-  through the model), activates offers, signs out and writes the roundup.
-- `v2/references/` holds the login, offer-navigation and bookkeeping notes the
-  skill loads on demand.
-- `v2/bin/cards_journal.py` is the small helper the agent imports for crash-safe
-  run journals: it reserves each login and click before it happens, spaces
-  logins, and budgets the agent's turns.
+- One Hermes cron job follows `v2/SKILL.md`. Every step with one right answer
+  is tested Python the agent calls from `browser_exec`; the agent only decides
+  what a helper hands back as `needs_judgment`, using
+  `v2/references/issuer-notes.md`.
+- `v2/bin/cards_browser.py` does the bank steps: picks the bank tab, prepares
+  the login for Hermes's native password-vault fill (the password never passes
+  through the model), submits once, clicks and verifies each offer, signs out
+  and writes the roundup. Chase and Amex cover the card the bank shows as
+  selected.
+- `v2/bin/cards_journal.py` keeps the crash-safe run journal: it reserves each
+  login and click before it happens, spaces logins, and budgets the agent's
+  turns. `v2/bin/cards_preflight.py` runs before the agent: it checks the
+  browser, closes orphaned journals and opens today's.
+- `v2/hermes/` has the cron job's prompt, the pre-run wrapper and how to apply
+  them. `v2/tests/` runs the helpers against a fake browser:
+  `python3 -m unittest discover -s v2/tests`.
 
 ## Sanitized, not runnable as is
 
@@ -36,7 +44,8 @@ replaced with placeholders (`<agent vault>`, `<telegram chat id>`,
 `op://<vault>/<item>/<field>`, `com.example.`). Some pieces are not included:
 the launchd plists, the Chrome-daemon setup, the v1 session-keepalive job, the
 1Password provisioning scripts and the v1 scripted fallback; the files note
-where they plugged in. v1 needs Python `websocket-client`; v2 needs Hermes.
+where they plugged in. v1 needs Python `websocket-client`; v2 needs Hermes
+(its tests need only Python 3).
 
 ## Files
 
@@ -52,9 +61,15 @@ v1/bin/lib/dedup-append.sh                     56
 v1/bin/lib/telegram-send.sh                   124
 v1/config/cards-agent.sb                       58
 v1/config/onepassword.conf.example              8
-v2/SKILL.md                                   310
-v2/bin/cards_journal.py                       275
-v2/references/native-login.md                 183
-v2/references/offer-navigation.md             267
-v2/references/runtime.md                       78
+v2/SKILL.md                                   126
+v2/bin/cards_browser.py                       754
+v2/bin/cards_journal.py                       320
+v2/bin/cards_preflight.py                      96
+v2/hermes/README.md                            38
+v2/hermes/prompt.txt                            1
+v2/hermes/scripts/cards_preflight.py           10
+v2/references/issuer-notes.md                  57
+v2/tests/test_cards_browser.py                572
+v2/tests/test_cards_journal.py                156
+v2/tests/test_offer_metadata.py                44
 ```

@@ -80,8 +80,8 @@ def chase_card_selected(probe, card_label):
 def chase_card_hub(url):
     """Card-scoped hub URL to return to after each activation.
 
-    The generic navKey hub reopens Chase's default card, so on 2026-11-01 every
-    iteration on a non-default card after the first failed its card check.
+    The generic navKey hub reopens Chase's default card, so after a card change
+    every iteration but the first fails its card check.
     """
     if "/merchantOffers/offer-hub" not in url or not re.search(r"[?&]accountId=\d+", url):
         raise ValueError("Capture the hub URL after selecting the card; it must carry accountId")
@@ -113,6 +113,16 @@ def _login_wait(data, name):
     return max(0.0, LOGIN_SPACING_SECONDS - (datetime.now(timezone.utc) - latest).total_seconds())
 
 
+INCOMPLETE = "issuer incomplete"
+ISSUERS = ("chase", "amex")
+
+
+def _issuer_complete(data, name):
+    issuer = data["issuers"].get(name, {})
+    return (issuer.get("status") == "completed" and issuer.get("sign_out") == "verified"
+            and not issuer.get("pending_offer") and not issuer.get("uncertain_offers"))
+
+
 class Journal:
     def __init__(self, path):
         self.path = Path(path).expanduser()
@@ -134,7 +144,7 @@ class Journal:
         """Exercise the actual persistence path before any bank mutation."""
         if required_issuers is not None:
             required_issuers = list(required_issuers)
-            if not required_issuers or any(n not in ("chase", "amex") for n in required_issuers):
+            if not required_issuers or any(n not in ISSUERS for n in required_issuers):
                 raise ValueError("Invalid required issuers")
         with self.transaction() as data:
             if required_issuers is not None:
@@ -142,7 +152,7 @@ class Journal:
                 data["required_issuers"] = sorted(set(data.get("required_issuers", ("chase", "amex"))) | set(required_issuers))
 
     def issuer(self, name, **fields):
-        if name not in ("chase", "amex"):
+        if name not in ISSUERS:
             raise ValueError("Unknown issuer")
         with self.transaction() as data:
             current = data["issuers"].setdefault(name, {"login_submissions": 0, "status": "running"})
@@ -213,12 +223,15 @@ class Journal:
             attempted = issuer.setdefault("attempted_offers", [])
             if key in attempted:
                 raise ValueError("Offer already attempted; inspect its live state without clicking")
+            if issuer.get("pending_offer"):
+                # The previous click was never verified; keep it visible instead of overwriting it.
+                issuer.setdefault("uncertain_offers", []).append(issuer["pending_offer"])
             attempted.append(key)
             issuer["pending_offer"] = key
 
     def record(self, name, key, **offer):
         # Whitelist nonsecret metadata; callers cannot accidentally dump tool results.
-        allowed = {k: offer[k] for k in ("merchant", "deal", "offer_id", "card_id", "proof", "expires_at") if k in offer}
+        allowed = {k: offer[k] for k in ("merchant", "deal", "offer_id", "card_id", "proof") if k in offer}
         with self.transaction() as data:
             issuer = data["issuers"][name]
             if issuer.get("pending_offer") not in (None, key):
@@ -247,16 +260,48 @@ class Journal:
                         and failure.get("reason") == "sign-out not verified"
                         and data["issuers"].get(failure.get("issuer"), {}).get("sign_out") == "verified"):
                     failure.update(resolved=True, resolved_at=now(), proof="subsequent sign_out verified")
+            names = sorted(set(data.get("required_issuers", ("chase", "amex"))) | set(data["issuers"]))
+            for name in names:
+                done = _issuer_complete(data, name)
+                for failure in data["failures"]:
+                    if (isinstance(failure, dict) and failure.get("issuer") == name
+                            and failure.get("reason") == INCOMPLETE and done and not failure.get("resolved")):
+                        failure.update(resolved=True, resolved_at=now(), proof="issuer later completed")
+                # Every issuer that is not complete carries a failure entry, so a
+                # partial journal always says which issuer is missing what.
+                if not done and not any(isinstance(f, dict) and f.get("issuer") == name and not f.get("resolved")
+                                        for f in data["failures"]):
+                    issuer = data["issuers"].get(name, {})
+                    data["failures"].append({"issuer": name, "reason": INCOMPLETE, "detail": (
+                        f"status={issuer.get('status', 'missing')}, sign_out={issuer.get('sign_out', 'none')}")})
             unresolved = any(not isinstance(f, dict) or not f.get("resolved") for f in data["failures"])
-            complete = not unresolved and all(
-                data["issuers"].get(name, {}).get("status") == "completed"
-                and data["issuers"][name].get("sign_out") == "verified"
-                and not data["issuers"][name].get("pending_offer")
-                for name in set(data.get("required_issuers", ("chase", "amex"))) | set(data["issuers"])
-            )
+            complete = not unresolved and all(_issuer_complete(data, name) for name in names)
             data["status"] = "completed" if complete else "partial"
             data["ended_at"] = now()
         return data["status"]
+
+    def read(self):
+        return json.loads(self.path.read_text())
+
+    def fail(self, name, reason, status=None, **fields):
+        """Record an unresolved failure, optionally with the issuer's blocked status."""
+        with self.transaction() as data:
+            issuer = data["issuers"].setdefault(name, {"login_submissions": 0, "status": "running"})
+            fields.pop("login_submissions", None)
+            issuer.update(fields)
+            if status:
+                issuer["status"] = status
+            data["failures"].append({"issuer": name, "reason": reason, **({"status": status} if status else {})})
+
+    def log_call(self, name, method, status, turn=None, **detail):
+        """Audit trail of helper calls and agent turns; small nonsecret strings only."""
+        allowed = {k: str(v)[:200] for k, v in detail.items() if k in ("stop", "reason", "count", "card", "override")}
+        with self.transaction() as data:
+            entry = {"at": now(), "issuer": name, "method": method, "status": status, **allowed}
+            if turn is not None:
+                entry["turn"] = turn
+                data["turns_used"] = max(data.get("turns_used", 0), turn)
+            data.setdefault("calls", []).append(entry)
 
 
 if __name__ == "__main__":
